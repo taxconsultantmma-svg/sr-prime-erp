@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import urllib.parse
 import pandas as pd
 import streamlit as st
 from datetime import datetime
@@ -108,7 +109,6 @@ def init_db():
     cur.execute("INSERT OR IGNORE INTO stock_items (item_name, default_rate) VALUES ('CLASS 3 DSC TOKEN', 2000.0)")
     cur.execute("INSERT OR IGNORE INTO stock_items (item_name, default_rate) VALUES ('CONSULTANCY CHARGES', 1000.0)")
     
-    # Default Client
     cur.execute("SELECT COUNT(*) FROM clients")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO clients (client_code, name, contact, address, gstin) VALUES ('100001', 'AWADH TRADERS', '9129607278', 'STATION ROAD, MAU', 'URP')")
@@ -131,10 +131,10 @@ def get_party_balance(client_id):
     conn.close()
     bal = tot_s - tot_r
     if bal >= 0:
-        return f"₹ {bal:,.2f} DR"
-    return f"₹ {abs(bal):,.2f} CR"
+        return f"₹ {bal:,.2f} DR", bal
+    return f"₹ {abs(bal):,.2f} CR", bal
 
-# Custom Styling
+# Styling
 st.markdown("""
     <style>
     .main-head {
@@ -149,6 +149,16 @@ st.markdown("""
     }
     .head-title { font-size: 20px; font-weight: bold; color: #FFCC00; }
     .head-sub { font-size: 14px; font-weight: bold; }
+    .wa-btn {
+        display: inline-block;
+        background-color: #25D366;
+        color: white !important;
+        font-weight: bold;
+        padding: 10px 18px;
+        border-radius: 6px;
+        text-decoration: none;
+        margin-top: 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -159,7 +169,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Navigation Menu
+# Sidebar
 menu = st.sidebar.radio(
     "📌 GATEWAY OF TALLY",
     ["VOUCHERS (BILLING / RECEIPT)", "SALES REGISTER", "STATEMENT / LEDGER", "CREATE MASTERS (PARTY / ITEM)"]
@@ -171,14 +181,14 @@ if menu == "VOUCHERS (BILLING / RECEIPT)":
     is_sales = "SALES" in vch_type
 
     conn = get_db()
-    parties = pd.read_sql("SELECT id, name, client_code FROM clients ORDER BY name ASC", conn)
+    parties = pd.read_sql("SELECT id, name, client_code, contact FROM clients ORDER BY name ASC", conn)
     items = pd.read_sql("SELECT item_name, default_rate FROM stock_items ORDER BY item_name ASC", conn)
     cur = conn.cursor()
     cnt = cur.execute(f"SELECT COUNT(*) FROM {'sales_invoices' if is_sales else 'receipts'}").fetchone()[0] + 1
     default_inv = f"SRC/{cnt:03d}"
     conn.close()
 
-    party_dict = {f"{row['name']} (CL-{row['client_code']})": row['id'] for _, row in parties.iterrows()}
+    party_dict = {f"{row['name']} (CL-{row['client_code']})": (row['id'], row['contact'], row['name']) for _, row in parties.iterrows()}
     item_dict = {row['item_name']: row['default_rate'] for _, row in items.iterrows()}
 
     with st.container():
@@ -189,9 +199,10 @@ if menu == "VOUCHERS (BILLING / RECEIPT)":
             v_date = st.text_input("DATE", value=datetime.now().strftime("%d-%m-%Y"))
 
         selected_party_label = st.selectbox("PARTY / CLIENT NAME", list(party_dict.keys()))
-        selected_party_id = party_dict[selected_party_label]
+        selected_party_id, party_phone, party_raw_name = party_dict[selected_party_label]
         
-        st.info(f"**CURRENT BALANCE:** {get_party_balance(selected_party_id)}")
+        bal_str, bal_num = get_party_balance(selected_party_id)
+        st.info(f"**CURRENT BALANCE:** {bal_str}")
 
         col3, col4 = st.columns([3, 1])
         with col3:
@@ -202,7 +213,7 @@ if menu == "VOUCHERS (BILLING / RECEIPT)":
 
         st.caption(f"**Amount In Words:** {amount_to_words(amount)}")
 
-        if st.button("ACCEPT & SAVE VOUCHER (ENTER)", type="primary"):
+        if st.button("ACCEPT & SAVE VOUCHER", type="primary"):
             conn = get_db()
             cur = conn.cursor()
             try:
@@ -216,6 +227,34 @@ if menu == "VOUCHERS (BILLING / RECEIPT)":
                                (inv_no.upper(), v_date, selected_party_id, amount, selected_item.upper()))
                 conn.commit()
                 st.success("✅ VOUCHER SUCCESSFULLY SAVED!")
+
+                # --- WhatsApp Message Formatting ---
+                clean_phone = "".join(filter(str.isdigit, str(party_phone or "")))
+                if len(clean_phone) == 10:
+                    clean_phone = "91" + clean_phone
+
+                vch_title = "TAX INVOICE / BILL" if is_sales else "PAYMENT RECEIPT"
+                wa_msg = (
+                    f"*{CHAMBER_NAME}*\n"
+                    f"{CHAMBER_PROP}\n"
+                    f"{CHAMBER_ADDR}\n"
+                    f"📞 {CHAMBER_PHONE}\n\n"
+                    f"📄 *{vch_title}*\n"
+                    f"-----------------------------\n"
+                    f"👤 *Client:* {party_raw_name}\n"
+                    f"🧾 *Voucher No:* {inv_no.upper()}\n"
+                    f"📅 *Date:* {v_date}\n"
+                    f"📌 *Particulars:* {selected_item.upper()}\n"
+                    f"💰 *Amount:* ₹ {amount:,.2f}\n"
+                    f"🔤 *In Words:* {amount_to_words(amount)}\n"
+                    f"-----------------------------\n"
+                    f"Thank you for choosing our professional services!"
+                )
+                encoded_msg = urllib.parse.quote(wa_msg)
+                wa_url = f"https://wa.me/{clean_phone}?text={encoded_msg}" if clean_phone else f"https://wa.me/?text={encoded_msg}"
+
+                st.markdown(f'<a href="{wa_url}" target="_blank" class="wa-btn">📲 Share on WhatsApp</a>', unsafe_allow_html=True)
+
             except Exception as e:
                 st.error(f"Error saving voucher: {e}")
             finally:
@@ -244,11 +283,11 @@ elif menu == "SALES REGISTER":
 elif menu == "STATEMENT / LEDGER":
     st.subheader("📖 STATEMENT OF ACCOUNT (LEDGER)")
     conn = get_db()
-    parties = pd.read_sql("SELECT id, name, client_code FROM clients ORDER BY name ASC", conn)
-    party_dict = {f"{row['name']} (CL-{row['client_code']})": row['id'] for _, row in parties.iterrows()}
+    parties = pd.read_sql("SELECT id, name, client_code, contact FROM clients ORDER BY name ASC", conn)
+    party_dict = {f"{row['name']} (CL-{row['client_code']})": (row['id'], row['contact'], row['name']) for _, row in parties.iterrows()}
     
     selected_p = st.selectbox("SELECT CLIENT / PARTY", list(party_dict.keys()))
-    pid = party_dict[selected_p]
+    pid, pphone, pname = party_dict[selected_p]
 
     sales = pd.read_sql("SELECT id, invoice_date AS DATE, 'SALES' AS TYPE, invoice_no AS 'VCH NO', particulars AS PARTICULARS, amount AS 'DEBIT (₹)', 0.0 AS 'CREDIT (₹)' FROM sales_invoices WHERE client_id=?", conn, params=(pid,))
     recs = pd.read_sql("SELECT id, receipt_date AS DATE, 'RECEIPT' AS TYPE, receipt_no AS 'VCH NO', payment_mode AS PARTICULARS, 0.0 AS 'DEBIT (₹)', amount AS 'CREDIT (₹)' FROM receipts WHERE client_id=?", conn, params=(pid,))
@@ -260,7 +299,27 @@ elif menu == "STATEMENT / LEDGER":
     tot_dr = combined['DEBIT (₹)'].sum()
     tot_cr = combined['CREDIT (₹)'].sum()
     due = tot_dr - tot_cr
-    st.info(f"**TOTAL SALES:** ₹ {tot_dr:,.2f} | **RECEIVED:** ₹ {tot_cr:,.2f} | **NET BALANCE:** ₹ {abs(due):,.2f} {'DR' if due>=0 else 'CR'}")
+    bal_text = f"₹ {abs(due):,.2f} {'DR (DUE)' if due>=0 else 'CR (ADVANCE)'}"
+    st.info(f"**TOTAL SALES:** ₹ {tot_dr:,.2f} | **RECEIVED:** ₹ {tot_cr:,.2f} | **NET BALANCE:** {bal_text}")
+
+    # WhatsApp Ledger Statement Share
+    clean_p = "".join(filter(str.isdigit, str(pphone or "")))
+    if len(clean_p) == 10:
+        clean_p = "91" + clean_p
+    
+    stmt_msg = (
+        f"*{CHAMBER_NAME}*\n"
+        f"📊 *ACCOUNT STATEMENT SUMMARY*\n"
+        f"-----------------------------\n"
+        f"👤 *Client:* {pname}\n"
+        f"📈 *Total Billed:* ₹ {tot_dr:,.2f}\n"
+        f"💵 *Total Paid:* ₹ {tot_cr:,.2f}\n"
+        f"📌 *Outstanding Balance:* {bal_text}\n"
+        f"-----------------------------\n"
+        f"Regards,\n{CHAMBER_PROP}"
+    )
+    stmt_url = f"https://wa.me/{clean_p}?text={urllib.parse.quote(stmt_msg)}" if clean_p else f"https://wa.me/?text={urllib.parse.quote(stmt_msg)}"
+    st.markdown(f'<a href="{stmt_url}" target="_blank" class="wa-btn">📲 Share Ledger Balance on WhatsApp</a>', unsafe_allow_html=True)
 
 # ----------------- 4. CREATE MASTERS -----------------
 elif menu == "CREATE MASTERS (PARTY / ITEM)":
@@ -269,7 +328,7 @@ elif menu == "CREATE MASTERS (PARTY / ITEM)":
 
     if opt == "CLIENT / PARTY":
         c_name = st.text_input("PARTY / CLIENT NAME").upper()
-        c_phone = st.text_input("PHONE NUMBER", value="9129607278")
+        c_phone = st.text_input("WHATSAPP / PHONE NUMBER (10 Digits)", value="9129607278")
         c_addr = st.text_input("ADDRESS", value="STATION ROAD, MAU").upper()
         c_gstin = st.text_input("GSTIN", value="URP").upper()
 
