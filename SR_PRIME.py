@@ -169,11 +169,38 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Sidebar
+# ----------------- SIDEBAR & BACKUP CONTROLS -----------------
+st.sidebar.markdown("### 📌 GATEWAY OF TALLY")
 menu = st.sidebar.radio(
-    "📌 GATEWAY OF TALLY",
-    ["VOUCHERS (BILLING / RECEIPT)", "SALES REGISTER", "STATEMENT / LEDGER", "CREATE MASTERS (PARTY / ITEM)"]
+    "NAVIGATION",
+    ["VOUCHERS (BILLING / RECEIPT)", "SALES REGISTER", "STATEMENT / LEDGER", "CREATE MASTERS (PARTY / ITEM)"],
+    label_visibility="collapsed"
 )
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💾 DATABASE BACKUP")
+
+# 1-Click Download Backup
+if os.path.exists(DB_NAME):
+    with open(DB_NAME, "rb") as db_file:
+        today_date = datetime.now().strftime("%d-%m-%Y")
+        st.sidebar.download_button(
+            label="📥 Download Database Backup",
+            data=db_file.read(),
+            file_name=f"SR_PRIME_BACKUP_{today_date}.db",
+            mime="application/x-sqlite3",
+            help="Click to save your entire accounting database to your device."
+        )
+
+# Restore Backup
+with st.sidebar.expander("📤 Restore / Upload Backup"):
+    uploaded_file = st.file_uploader("Upload .db file", type=["db"], label_visibility="collapsed")
+    if uploaded_file is not None:
+        if st.button("Confirm Restore", type="secondary"):
+            with open(DB_NAME, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            st.success("✅ Database restored successfully! Please refresh.")
+            st.rerun()
 
 # ----------------- 1. VOUCHERS SCREEN -----------------
 if menu == "VOUCHERS (BILLING / RECEIPT)":
@@ -302,7 +329,6 @@ elif menu == "STATEMENT / LEDGER":
     bal_text = f"₹ {abs(due):,.2f} {'DR (DUE)' if due>=0 else 'CR (ADVANCE)'}"
     st.info(f"**TOTAL SALES:** ₹ {tot_dr:,.2f} | **RECEIVED:** ₹ {tot_cr:,.2f} | **NET BALANCE:** {bal_text}")
 
-    # WhatsApp Ledger Statement Share
     clean_p = "".join(filter(str.isdigit, str(pphone or "")))
     if len(clean_p) == 10:
         clean_p = "91" + clean_p
